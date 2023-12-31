@@ -8,6 +8,20 @@ DevTools network table for https://www.dctrafficinfo.org/
 
 I wanted to get some reps in with [BubbleTea](https://github.com/charmbracelet/bubbletea), so here's a CLI that lets you browse all available CCTV cameras.
 
+## Running
+
+Be sure you have `ffplay` installed. On macOS, just run
+
+```
+brew install ffplay
+```
+
+Build the binary and run it:
+
+```
+go run cmd/ddotcli.go
+```
+
 
 ## DDOT Architecture
 
