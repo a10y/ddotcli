@@ -1,4 +1,4 @@
-module ai.intrinsiclabs.ddotcli
+module github.com/a10y/ddotcli
 
 go 1.21.0
 

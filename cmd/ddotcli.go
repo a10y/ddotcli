@@ -1,7 +1,7 @@
 package main
 
 import (
-	"ai.intrinsiclabs.ddotcli/pkg/ddot"
+	"github.com/a10y/ddotcli/pkg/ddot"
 	"fmt"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
