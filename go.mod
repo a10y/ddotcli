@@ -1,4 +1,4 @@
-module ai.intrinsiclabs.chatter
+module ai.intrinsiclabs.ddotcli
 
 go 1.21.0
 

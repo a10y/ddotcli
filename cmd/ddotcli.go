@@ -1,12 +1,14 @@
 package main
 
 import (
-	"ai.intrinsiclabs.chatter/pkg/ddot"
+	"ai.intrinsiclabs.ddotcli/pkg/ddot"
 	"fmt"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"time"
 )
@@ -21,7 +23,7 @@ type cliModel struct {
 }
 type updateCamerasMsg struct{}
 
-func (c *cliModel) Init() tea.Cmd { return nil }
+func (c *cliModel) Init() tea.Cmd { return tea.ClearScreen }
 
 func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
@@ -34,9 +36,16 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Get URL corresponding to the camera ID
 			id := c.table.SelectedRow()[0]
 			streamUrl := c.ddotClient.GetFfmpegUrl(id)
-			return c, tea.Batch(
-				tea.Printf("opening stream to %v", c.table.SelectedRow()[1]),
-				tea.ExecProcess(exec.Command("ffplay", "-i", streamUrl), nil),
+
+			exe := exec.Command("ffplay", "-i", streamUrl)
+			devnull, _ := os.Open(os.DevNull)
+			exe.Stdout = devnull
+			exe.Stderr = devnull
+
+			return c, tea.Sequence(
+				tea.Printf("press ctrl-C to exit ffplay session"),
+				tea.ExecProcess(exe, nil),
+				tea.ClearScreen,
 			)
 		}
 	case updateCamerasMsg:
@@ -62,8 +71,22 @@ func toRow(cameraInfo ddot.CameraInfo) table.Row {
 }
 
 func (c *cliModel) View() string {
-	// Return a table with all the table
-	return baseStyle.Render(c.table.View()) + "\n"
+	var selectedId string
+	if row := c.table.SelectedRow(); row == nil {
+		selectedId = ""
+	} else {
+		selectedId = row[0]
+	}
+	idx := 1 + slices.IndexFunc(c.table.Rows(), func(row table.Row) bool {
+		return row[0] == selectedId
+	})
+
+	darkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
+
+	return baseStyle.Render(c.table.View()) + "\n\n" +
+		fmt.Sprintf("selected %v of %v", idx, len(c.table.Rows())) +
+		"\n" +
+		darkStyle.Render(fmt.Sprintf("press enter to open stream"))
 }
 
 var _ tea.Model = (*cliModel)(nil)
@@ -87,6 +110,13 @@ func main() {
 		table.WithFocused(true),
 		table.WithHeight(50),
 	)
+	s := table.DefaultStyles()
+	s.Header = s.Header.
+		BorderStyle(lipgloss.NormalBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		BorderBottom(true).
+		Bold(true)
+	tbl.SetStyles(s)
 
 	app := tea.NewProgram(&cliModel{tbl, cctv})
 
