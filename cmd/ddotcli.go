@@ -6,11 +6,14 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -38,7 +41,11 @@ type recordingProcess struct {
 	cameraName string
 	outfile    string
 	exe        *exec.Cmd
+	// Wait for this routine to go.
+	stopChan chan string
 }
+
+// Make a channel so that the managing goroutine will wait for all child processes to complete properly...
 
 type updateCamerasMsg struct{}
 
@@ -51,9 +58,18 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			// Quit the program
+
+			// Close all recordings
+			for _, recordingProc := range c.recordings {
+				log.Printf("halting recording %v...\n", recordingProc.outfile)
+				recordingProc.stopChan <- "stop"
+			}
 			return c, tea.Quit
 		case tea.KeyEnter:
-			// Get URL corresponding to the camera ID
+			if c.activePane == PaneRecordings {
+				break
+			}
+
 			id := c.camerasTable.SelectedRow()[0]
 			streamUrl := c.ddotClient.GetFfmpegUrl(id)
 
@@ -68,7 +84,15 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tea.ClearScreen,
 			)
 		case tea.KeyTab:
-			// Switch the active panel.
+			if c.activePane == PaneCameras {
+				c.activePane = PaneRecordings
+				c.recordingsTable.Focus()
+				c.camerasTable.Blur()
+			} else {
+				c.activePane = PaneCameras
+				c.camerasTable.Focus()
+				c.recordingsTable.Blur()
+			}
 		case tea.KeyRunes:
 			switch string(msg.Runes) {
 			case "r":
@@ -78,12 +102,32 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				outfile := fmt.Sprintf("%v.ts", cameraId)
 				streamUrl := c.ddotClient.GetFfmpegUrl(cameraId)
 				exe := exec.Command("ffmpeg", "-i", streamUrl, outfile)
+
+				stopChan := make(chan string)
 				recording := recordingProcess{
-					cameraId, cameraName, outfile, exe,
+					cameraId, cameraName, outfile, exe, stopChan,
 				}
+
 				go func() {
-					if err := exe.Run(); err != nil {
-						panic(fmt.Errorf("error: failed to run recording: %v", err))
+					defer close(stopChan)
+
+					stderr, err := exe.StderrPipe()
+					if err != nil {
+						panic("Failed to pipe to stdout of ffmpeg")
+					}
+
+					if err := exe.Start(); err != nil {
+						buf, _ := io.ReadAll(stderr)
+						panic(fmt.Errorf("error: failed to run recording: %v: stderr: %v", err, string(buf)))
+					}
+
+					select {
+					case _ = <-stopChan:
+						// kill -6
+						if err = exe.Process.Signal(syscall.SIGABRT); err != nil {
+							log.Printf("ffmpeg process kill -6 failed for %v, may become a zombie\n", outfile)
+						}
+						return
 					}
 				}()
 
@@ -94,8 +138,6 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 
 				c.recordingsTable.SetRows(rows)
-
-				return c, nil
 			}
 		}
 	case updateCamerasMsg:
