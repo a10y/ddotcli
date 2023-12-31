@@ -1,5 +1,7 @@
 # ddot-cli
 
+![screenshot](./assets/screenshot.jpg)
+
 One of my favorite open datasets is Washington DC's open traffic cameras. They have a funky architecture, which you can reverse engineer from viewing
 DevTools network table for https://www.dctrafficinfo.org/
 
