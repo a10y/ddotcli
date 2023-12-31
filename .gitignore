@@ -1,2 +1,4 @@
 /.idea/
 /ddotcli
+.DS_Store
+*.ts

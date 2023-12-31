@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/a10y/ddotcli/pkg/ddot"
 	"fmt"
+	"github.com/a10y/ddotcli/pkg/ddot"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,10 +18,28 @@ var baseStyle = lipgloss.NewStyle().
 	BorderStyle(lipgloss.NormalBorder()).
 	BorderForeground(lipgloss.Color("240"))
 
+type ActivePane uint8
+
+const (
+	PaneCameras ActivePane = iota
+	PaneRecordings
+)
+
 type cliModel struct {
-	table      table.Model
-	ddotClient ddot.Client
+	camerasTable    table.Model
+	recordingsTable table.Model
+	ddotClient      ddot.Client
+	activePane      ActivePane
+	recordings      []recordingProcess
 }
+
+type recordingProcess struct {
+	cameraId   string
+	cameraName string
+	outfile    string
+	exe        *exec.Cmd
+}
+
 type updateCamerasMsg struct{}
 
 func (c *cliModel) Init() tea.Cmd { return tea.ClearScreen }
@@ -31,10 +50,11 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			// Quit the program
 			return c, tea.Quit
 		case tea.KeyEnter:
 			// Get URL corresponding to the camera ID
-			id := c.table.SelectedRow()[0]
+			id := c.camerasTable.SelectedRow()[0]
 			streamUrl := c.ddotClient.GetFfmpegUrl(id)
 
 			exe := exec.Command("ffplay", "-i", streamUrl)
@@ -47,6 +67,36 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tea.ExecProcess(exe, nil),
 				tea.ClearScreen,
 			)
+		case tea.KeyTab:
+			// Switch the active panel.
+		case tea.KeyRunes:
+			switch string(msg.Runes) {
+			case "r":
+				cameraId := c.camerasTable.SelectedRow()[0]
+				cameraName := c.camerasTable.SelectedRow()[1]
+
+				outfile := fmt.Sprintf("%v.ts", cameraId)
+				streamUrl := c.ddotClient.GetFfmpegUrl(cameraId)
+				exe := exec.Command("ffmpeg", "-i", streamUrl, outfile)
+				recording := recordingProcess{
+					cameraId, cameraName, outfile, exe,
+				}
+				go func() {
+					if err := exe.Run(); err != nil {
+						panic(fmt.Errorf("error: failed to run recording: %v", err))
+					}
+				}()
+
+				c.recordings = append(c.recordings, recording)
+				var rows []table.Row
+				for _, recording := range c.recordings {
+					rows = append(rows, []string{recording.cameraName, recording.outfile})
+				}
+
+				c.recordingsTable.SetRows(rows)
+
+				return c, nil
+			}
 		}
 	case updateCamerasMsg:
 		cameras := c.ddotClient.GetCameras()
@@ -54,9 +104,17 @@ func (c *cliModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, camera := range cameras {
 			rows = append(rows, toRow(camera))
 		}
-		c.table.SetRows(rows)
+		slices.SortFunc(rows, func(a, b table.Row) int {
+			return strings.Compare(a[1], b[1])
+		})
+
+		c.camerasTable.SetRows(rows)
 	}
-	c.table, cmd = c.table.Update(msg)
+	if c.activePane == PaneCameras {
+		c.camerasTable, cmd = c.camerasTable.Update(msg)
+	} else {
+		c.recordingsTable, cmd = c.recordingsTable.Update(msg)
+	}
 
 	return c, cmd
 }
@@ -72,21 +130,22 @@ func toRow(cameraInfo ddot.CameraInfo) table.Row {
 
 func (c *cliModel) View() string {
 	var selectedId string
-	if row := c.table.SelectedRow(); row == nil {
+	if row := c.camerasTable.SelectedRow(); row == nil {
 		selectedId = ""
 	} else {
 		selectedId = row[0]
 	}
-	idx := 1 + slices.IndexFunc(c.table.Rows(), func(row table.Row) bool {
+	idx := 1 + slices.IndexFunc(c.camerasTable.Rows(), func(row table.Row) bool {
 		return row[0] == selectedId
 	})
 
 	darkStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#666666"))
 
-	return baseStyle.Render(c.table.View()) + "\n\n" +
-		fmt.Sprintf("selected %v of %v", idx, len(c.table.Rows())) +
+	return baseStyle.Render(c.camerasTable.View()) + "\n\n" +
+		baseStyle.Render(c.recordingsTable.View()) + "\n\n" +
+		fmt.Sprintf("selected %v of %v", idx, len(c.camerasTable.Rows())) +
 		"\n" +
-		darkStyle.Render(fmt.Sprintf("press enter to open stream"))
+		darkStyle.Render(fmt.Sprintf("press enter to open stream   press ctrl-C to quit    press r to begin recording"))
 }
 
 var _ tea.Model = (*cliModel)(nil)
@@ -104,12 +163,23 @@ func main() {
 		{Title: "Longitude", Width: 20},
 	}
 
-	// Make a table
+	// Make a camerasTable
 	tbl := table.New(
 		table.WithColumns(cols),
 		table.WithFocused(true),
-		table.WithHeight(50),
+		table.WithHeight(40),
 	)
+
+	recordingCols := []table.Column{
+		{"Stream", 20},
+		{"Size", 20},
+	}
+	recordingTable := table.New(
+		table.WithColumns(recordingCols),
+		table.WithFocused(false),
+		table.WithHeight(15),
+	)
+
 	s := table.DefaultStyles()
 	s.Header = s.Header.
 		BorderStyle(lipgloss.NormalBorder()).
@@ -118,7 +188,7 @@ func main() {
 		Bold(true)
 	tbl.SetStyles(s)
 
-	app := tea.NewProgram(&cliModel{tbl, cctv})
+	app := tea.NewProgram(&cliModel{tbl, recordingTable, cctv, PaneCameras, []recordingProcess{}}, tea.WithMouseAllMotion())
 
 	go func() {
 		for {
